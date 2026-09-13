@@ -82,14 +82,18 @@ function signingKey(secret: string, date: string) {
   return hmac(serviceKey, "aws4_request");
 }
 
-async function signedR2Request(settings: R2Settings, options: R2RequestOptions) {
-  const body = options.body ?? Buffer.alloc(0);
-  const payloadHash = sha256Hex(body);
+function signRequest(
+  settings: R2Settings,
+  method: R2RequestOptions["method"],
+  bucket: string,
+  key: string | undefined,
+  payloadHash: string,
+  contentType: string
+) {
   const timestamp = amzDate();
   const host = `${settings.accountId}.r2.cloudflarestorage.com`;
-  const path = canonicalPath(options.bucket, options.key);
+  const path = canonicalPath(bucket, key);
   const url = `https://${host}${path}`;
-  const contentType = options.contentType ?? "application/octet-stream";
   const signedHeaders = "content-type;host;x-amz-content-sha256;x-amz-date";
   const canonicalHeaders = [
     `content-type:${contentType}`,
@@ -97,31 +101,32 @@ async function signedR2Request(settings: R2Settings, options: R2RequestOptions) 
     `x-amz-content-sha256:${payloadHash}`,
     `x-amz-date:${timestamp.full}`
   ].join("\n") + "\n";
-  const canonicalRequest = [
-    options.method,
-    path,
-    "",
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash
-  ].join("\n");
+  const canonicalRequest = [method, path, "", canonicalHeaders, signedHeaders, payloadHash].join("\n");
   const scope = `${timestamp.short}/auto/s3/aws4_request`;
-  const stringToSign = [
-    "AWS4-HMAC-SHA256",
-    timestamp.full,
-    scope,
-    sha256Hex(canonicalRequest)
-  ].join("\n");
+  const stringToSign = ["AWS4-HMAC-SHA256", timestamp.full, scope, sha256Hex(canonicalRequest)].join("\n");
   const signature = hmacHex(signingKey(settings.secretAccessKey, timestamp.short), stringToSign);
-  const response = await fetch(url, {
-    method: options.method,
-    body: options.method === "GET" || options.method === "HEAD" ? undefined : body,
+
+  return {
+    url,
     headers: {
       Authorization: `AWS4-HMAC-SHA256 Credential=${settings.accessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
       "Content-Type": contentType,
       "x-amz-content-sha256": payloadHash,
       "x-amz-date": timestamp.full
     }
+  };
+}
+
+async function signedR2Request(settings: R2Settings, options: R2RequestOptions) {
+  const body = options.body ?? Buffer.alloc(0);
+  const payloadHash = sha256Hex(body);
+  const contentType = options.contentType ?? "application/octet-stream";
+  const { url, headers } = signRequest(settings, options.method, options.bucket, options.key, payloadHash, contentType);
+
+  const response = await fetch(url, {
+    method: options.method,
+    body: options.method === "GET" || options.method === "HEAD" ? undefined : body,
+    headers
   });
 
   if (!response.ok) {
